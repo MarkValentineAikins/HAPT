@@ -1,5 +1,3 @@
-# HAPT Algorithm.
-
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
@@ -47,6 +45,29 @@ class HierarchicalAdaptivePredictionTree:
         self.feature_importance_ = None
         self.classes_ = None
 
+    def get_params(self, deep=True):
+        """
+        Get parameters for this estimator (required for sklearn compatibility)
+        """
+        return {
+            'max_depth': self.max_depth,
+            'min_samples_split': self.min_samples_split,
+            'min_samples_leaf': self.min_samples_leaf,
+            'hierarchy_levels': self.hierarchy_levels,
+            'adaptation_threshold': self.adaptation_threshold
+        }
+
+    def set_params(self, **params):
+        """
+        Set parameters for this estimator (required for sklearn compatibility)
+        """
+        for key, value in params.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
+            else:
+                raise ValueError(f"Invalid parameter {key} for estimator {self.__class__.__name__}")
+        return self
+
     def _identify_hierarchy(self, X, y):
         """
         Identify hierarchical structure in the data
@@ -73,159 +94,163 @@ class HierarchicalAdaptivePredictionTree:
 
         return hierarchy
 
+    def _adaptive_split(self, X_subset, y_subset, level):
+        """
+        Perform adaptive splitting based on hierarchy level
+        """
+        if len(X_subset) < self.min_samples_split:
+            return None
 
-def _adaptive_split(self, X_subset, y_subset, level):
-    """
-    Perform adaptive splitting based on hierarchy level
-    """
-    if len(X_subset) < self.min_samples_split:
-        return None
+        # Calculate information gain for adaptive splitting
+        best_feature = None
+        best_threshold = None
+        best_gain = -1
 
-    # Calculate information gain for adaptive splitting
-    best_feature = None
-    best_threshold = None
-    best_gain = -1
+        for feature in X_subset.columns:
+            if X_subset[feature].dtype in ['int64', 'float64']:
+                # For numerical features
+                thresholds = np.percentile(X_subset[feature], [25, 50, 75])
+                for threshold in thresholds:
+                    left_mask = X_subset[feature] <= threshold
+                    right_mask = ~left_mask
 
-    for feature in X_subset.columns:
-        if X_subset[feature].dtype in ['int64', 'float64']:
-            # For numerical features
-            thresholds = np.percentile(X_subset[feature], [25, 50, 75])
-            for threshold in thresholds:
-                left_mask = X_subset[feature] <= threshold
-                right_mask = ~left_mask
+                    if sum(left_mask) < self.min_samples_leaf or sum(right_mask) < self.min_samples_leaf:
+                        continue
 
-    if sum(left_mask) < self.min_samples_leaf or sum(right_mask) < self.min_samples_leaf:
-        #continue
+                    # Calculate weighted information gain
+                    gain = self._calculate_information_gain(y_subset, y_subset[left_mask], y_subset[right_mask])
 
-        #Calculate weighted information gain
-        gain = self._calculate_information_gain(y_subset, y_subset[left_mask], y_subset[right_mask])
+                    # Apply hierarchy-based weighting
+                    level_weight = 1.0 / (level + 1)  # Higher levels get lower weights
+                    weighted_gain = gain * level_weight
 
+                    if weighted_gain > best_gain:
+                        best_gain = weighted_gain
+                        best_feature = feature
+                        best_threshold = threshold
+            else:
+                # For categorical features
+                unique_values = X_subset[feature].unique()
+                if len(unique_values) > 1:
+                    for value in unique_values:
+                        left_mask = X_subset[feature] == value
+                        right_mask = ~left_mask
 
-# Apply hierarchy-based weighting
-level_weight = 1.0 / (level + 1)  # Higher levels get lower weights
-weighted_gain = gain * level_weight
+                        if sum(left_mask) < self.min_samples_leaf or sum(right_mask) < self.min_samples_leaf:
+                            continue
 
-if weighted_gain > best_gain:
-    best_gain = weighted_gain
-    best_feature = feature
-    best_threshold = threshold
-else:
-    # For categorical features
-    unique_values = X_subset[feature].unique()
-if len(unique_values) > 1:
-    for value in unique_values:
-        left_mask = X_subset[feature] == value
-        right_mask = ~left_mask
+                        gain = self._calculate_information_gain(y_subset, y_subset[left_mask], y_subset[right_mask])
+                        level_weight = 1.0 / (level + 1)
+                        weighted_gain = gain * level_weight
 
-        if sum(left_mask) < self.min_samples_leaf or sum(right_mask) < self.min_samples_leaf:
-            continue
+                        if weighted_gain > best_gain:
+                            best_gain = weighted_gain
+                            best_feature = feature
+                            best_threshold = value
 
-        gain = self._calculate_information_gain(y_subset, y_subset[left_mask], y_subset[right_mask])
-        level_weight = 1.0 / (level + 1)
-        weighted_gain = gain * level_weight
+        return {'feature': best_feature, 'threshold': best_threshold, 'gain': best_gain}
 
-        if weighted_gain > best_gain:
-            best_gain = weighted_gain
-            best_feature = feature
-            best_threshold = value
+    def _calculate_information_gain(self, parent, left_child, right_child):
+        """
+        Calculate information gain for a split
+        """
 
-            #return {'feature': best_feature, 'threshold': best_threshold, 'gain': best_gain}
+        def entropy(y):
+            if len(y) == 0:
+                return 0
+            proportions = np.bincount(y) / len(y)
+            return -np.sum([p * np.log2(p) for p in proportions if p > 0])
 
+        parent_entropy = entropy(parent)
+        left_weight = len(left_child) / len(parent)
+        right_weight = len(right_child) / len(parent)
 
-def _calculate_information_gain(self, parent, left_child, right_child):
-    """
-    Calculate information gain for a split
-    """
+        weighted_child_entropy = left_weight * entropy(left_child) + right_weight * entropy(right_child)
 
-    def entropy(y):
-        if len(y) == 0:
-            return 0
-        proportions = np.bincount(y) / len(y)
-        return -np.sum([p * np.log2(p) for p in proportions if p > 0])
+        return parent_entropy - weighted_child_entropy
 
-    parent_entropy = entropy(parent)
-    left_weight = len(left_child) / len(parent)
-    right_weight = len(right_child) / len(parent)
-
-    weighted_child_entropy = left_weight * entropy(left_child) + right_weight * entropy(right_child)
-
-    return parent_entropy - weighted_child_entropy
-
-
-def fit(self, X, y):
-    """
+    def fit(self, X, y):
+        """
         Train the HAPT algorithm
         """
-    # Identify hierarchical structure
-    self.hierarchy_structure = self._identify_hierarchy(X, y)
-    self.classes_ = np.unique(y)
+        # Reset internal state for fresh fitting
+        self.trees = {}
+        self.hierarchy_structure = {}
+        self.feature_importance_ = None
+        self.classes_ = None
 
-    # Build trees for each hierarchy level
-    for level in range(self.hierarchy_levels):
-        level_name = f'level_{level + 1}'
+        # Identify hierarchical structure
+        self.hierarchy_structure = self._identify_hierarchy(X, y)
+        self.classes_ = np.unique(y)
 
-        if level_name in self.hierarchy_structure:
-            # Select features for this level
-            if level == 0:
-                level_features = self.hierarchy_structure[level_name]
-            else:
-                # Include features from previous levels
-                prev_features = []
-                for prev_level in range(level):
-                    prev_level_name = f'level_{prev_level + 1}'
-                    if prev_level_name in self.hierarchy_structure:
-                        prev_features.extend(self.hierarchy_structure[prev_level_name])
-                level_features = prev_features + self.hierarchy_structure[level_name]
-            # Filter features that exist in X
-            level_features = [f for f in level_features if f in X.columns]
+        # Build trees for each hierarchy level
+        for level in range(self.hierarchy_levels):
+            level_name = f'level_{level + 1}'
 
-            if level_features:
-                X_level = X[level_features]
+            if level_name in self.hierarchy_structure:
+                # Select features for this level
+                if level == 0:
+                    level_features = self.hierarchy_structure[level_name]
+                else:
+                    # Include features from previous levels
+                    prev_features = []
+                    for prev_level in range(level):
+                        prev_level_name = f'level_{prev_level + 1}'
+                        if prev_level_name in self.hierarchy_structure:
+                            prev_features.extend(self.hierarchy_structure[prev_level_name])
+                    level_features = prev_features + self.hierarchy_structure[level_name]
 
-                # Create decision tree for this level with adaptive parameters
-                tree = DecisionTreeClassifier(
-                    max_depth=max(3, self.max_depth - level),
-                    min_samples_split=self.min_samples_split,
-                    min_samples_leaf=self.min_samples_leaf,
-                    random_state=42
-                )
+                # Filter features that exist in X
+                level_features = [f for f in level_features if f in X.columns]
 
-                tree.fit(X_level, y)
-                self.trees[level_name] = {
-                    'tree': tree,
-                    'features': level_features,
-                    'weight': 1.0 / (level + 1)  # Higher levels get lower weights
-                }
+                if level_features:
+                    X_level = X[level_features]
 
-    # Calculate feature importance across all levels
-    self._calculate_feature_importance(X)
-    return self
+                    # Create decision tree for this level with adaptive parameters
+                    tree = DecisionTreeClassifier(
+                        max_depth=max(3, self.max_depth - level),
+                        min_samples_split=self.min_samples_split,
+                        min_samples_leaf=self.min_samples_leaf,
+                        random_state=42
+                    )
 
+                    tree.fit(X_level, y)
+                    self.trees[level_name] = {
+                        'tree': tree,
+                        'features': level_features,
+                        'weight': 1.0 / (level + 1),  # Higher levels get lower weights
+                        'level': level
+                    }
 
-def _calculate_feature_importance(self, X):
-    """
-    Calculate feature importance across all hierarchy levels
-    """
-    feature_importance = {}
+        # Calculate feature importance across all levels
+        self._calculate_feature_importance(X)
 
-    for level_name, level_data in self.trees.items():
-        tree = level_data['tree']
-        features = level_data['features']
-        weight = level_data['weight']
+        return self
 
-        # Get feature importance from this level's tree
-        if hasattr(tree, 'feature_importances_'):
-            for i, feature in enumerate(features):
-                if feature not in feature_importance:
-                    feature_importance[feature] = 0
-                feature_importance[feature] += tree.feature_importances_[i] * weight
+    def _calculate_feature_importance(self, X):
+        """
+        Calculate feature importance across all hierarchy levels
+        """
+        feature_importance = {}
 
-    # Normalize feature importance
-    total_importance = sum(feature_importance.values())
-    if total_importance > 0:
-        self.feature_importance_ = {k: v / total_importance for k, v in feature_importance.items()}
-    else:
-        self.feature_importance_ = feature_importance
+        for level_name, level_data in self.trees.items():
+            tree = level_data['tree']
+            features = level_data['features']
+            weight = level_data['weight']
+
+            # Get feature importance from this level's tree
+            if hasattr(tree, 'feature_importances_'):
+                for i, feature in enumerate(features):
+                    if feature not in feature_importance:
+                        feature_importance[feature] = 0
+                    feature_importance[feature] += tree.feature_importances_[i] * weight
+
+        # Normalize feature importance
+        total_importance = sum(feature_importance.values())
+        if total_importance > 0:
+            self.feature_importance_ = {k: v / total_importance for k, v in feature_importance.items()}
+        else:
+            self.feature_importance_ = feature_importance
 
     def predict(self, X):
         """
@@ -320,39 +345,40 @@ def _calculate_feature_importance(self, X):
 
         return np.array(probabilities)
 
-    # Model Comparison and Evaluation Class
-    class ModelComparison:
+
+# Model Comparison and Evaluation Class
+class ModelComparison:
+    """
+    Class for comparing HAPT, Decision Tree, and Random Forest algorithms
+    """
+
+    def __init__(self):
+        self.models = {}
+        self.results = {}
+
+    def prepare_data(self, data, target_column):
         """
-        Class for comparing HAPT, Decision Tree, and Random Forest algorithms
+        Prepare data for model training
         """
+        # Separate features and target
+        X = data.drop(columns=[target_column])
+        y = data[target_column]
 
-        def __init__(self):
-            self.models = {}
-            self.results = {}
+        # Handle categorical variables
+        categorical_columns = X.select_dtypes(include=['object']).columns
+        for col in categorical_columns:
+            le = LabelEncoder()
+            X[col] = le.fit_transform(X[col].astype(str))
 
-        def prepare_data(self, data, target_column):
-            """
-            Prepare data for model training
-            """
-            # Separate features and target
-            X = data.drop(columns=[target_column])
-            y = data[target_column]
+        # Handle missing values
+        X = X.fillna(X.mean())
 
-            # Handle categorical variables
-            categorical_columns = X.select_dtypes(include=['object']).columns
-            for col in categorical_columns:
-                le = LabelEncoder()
-                X[col] = le.fit_transform(X[col].astype(str))
+        # Encode target variable if categorical
+        if y.dtype == 'object':
+            le_target = LabelEncoder()
+            y = le_target.fit_transform(y)
 
-            # Handle missing values
-            X = X.fillna(X.mean())
-
-            # Encode target variable if categorical
-            if y.dtype == 'object':
-                le_target = LabelEncoder()
-                y = le_target.fit_transform(y)
-
-            return X, y
+        return X, y
 
     def train_models(self, X, y, test_size=0.2, random_state=42):
         """
@@ -395,8 +421,41 @@ def _calculate_feature_importance(self, X):
             recall = recall_score(y_test, y_pred, average='weighted')
             f1 = f1_score(y_test, y_pred, average='weighted')
 
-            # Cross-validation
-            cv_scores = cross_val_score(model, X_train, y_train, cv=5, scoring='accuracy')
+            # Cross-validation (with error handling for HAPT)
+            try:
+                cv_scores = cross_val_score(model, X_train, y_train, cv=5, scoring='accuracy')
+                cv_mean = cv_scores.mean()
+                cv_std = cv_scores.std()
+            except Exception as e:
+                print(f"Cross-validation failed for {name}: {e}")
+                # Manual cross-validation for HAPT
+                if name == 'HAPT':
+                    cv_scores = []
+                    from sklearn.model_selection import KFold
+                    kfold = KFold(n_splits=5, shuffle=True, random_state=42)
+
+                    for train_idx, val_idx in kfold.split(X_train):
+                        X_train_fold = X_train.iloc[train_idx]
+                        X_val_fold = X_train.iloc[val_idx]
+                        y_train_fold = y_train.iloc[train_idx]
+                        y_val_fold = y_train.iloc[val_idx]
+
+                        # Create a new model instance for this fold
+                        fold_model = HierarchicalAdaptivePredictionTree(
+                            max_depth=10, min_samples_split=10, min_samples_leaf=5,
+                            hierarchy_levels=3, adaptation_threshold=0.1
+                        )
+                        fold_model.fit(X_train_fold, y_train_fold)
+                        y_pred_fold = fold_model.predict(X_val_fold)
+                        fold_accuracy = accuracy_score(y_val_fold, y_pred_fold)
+                        cv_scores.append(fold_accuracy)
+
+                    cv_scores = np.array(cv_scores)
+                    cv_mean = cv_scores.mean()
+                    cv_std = cv_scores.std()
+                else:
+                    cv_mean = accuracy  # Fallback to test accuracy
+                    cv_std = 0.0
 
             # Store results
             self.models[name] = model
@@ -405,71 +464,69 @@ def _calculate_feature_importance(self, X):
                 'precision': precision,
                 'recall': recall,
                 'f1_score': f1,
-                'cv_mean': cv_scores.mean(),
-                'cv_std': cv_scores.std(),
+                'cv_mean': cv_mean,
+                'cv_std': cv_std,
                 'predictions': y_pred,
                 'actual': y_test
             }
 
-            print(f"{name} - Accuracy: {accuracy:.4f}, F1: {f1:.4f}, CV: {cv_scores.mean():.4f}±{cv_scores.std():.4f}")
+            print(f"{name} - Accuracy: {accuracy:.4f}, F1: {f1:.4f}, CV: {cv_mean:.4f}±{cv_std:.4f}")
 
+    def statistical_significance_test(self):
+        """
+        Perform statistical significance test between models
+        """
+        results_df = pd.DataFrame(self.results).T
 
-def statistical_significance_test(self):
-    """
-    Perform statistical significance test between models
-    """
-    results_df = pd.DataFrame(self.results).T
+        # Perform pairwise t-tests
+        models = list(self.results.keys())
+        significance_results = {}
 
-    # Perform pairwise t-tests
-    models = list(self.results.keys())
-    significance_results = {}
+        for i in range(len(models)):
+            for j in range(i + 1, len(models)):
+                model1, model2 = models[i], models[j]
 
-    for i in range(len(models)):
-        for j in range(i + 1, len(models)):
-            model1, model2 = models[i], models[j]
+                # Get cross-validation scores for both models
+                # For simplicity, we'll use the stored CV results
+                # In a real scenario, you'd want to run multiple CV folds
+                acc1 = self.results[model1]['accuracy']
+                acc2 = self.results[model2]['accuracy']
 
-            # Get cross-validation scores for both models
-            # For simplicity, we'll use the stored CV results
-            # In a real scenario, you'd want to run multiple CV folds
-            acc1 = self.results[model1]['accuracy']
-            acc2 = self.results[model2]['accuracy']
+                # Simplified significance test (in practice, use proper CV scores)
+                diff = abs(acc1 - acc2)
+                significance_results[f'{model1} vs {model2}'] = {
+                    'difference': diff,
+                    'significant': diff > 0.05  # Simplified threshold
+                }
 
-            # Simplified significance test (in practice, use proper CV scores)
-            diff = abs(acc1 - acc2)
-            significance_results[f'{model1} vs {model2}'] = {
-                'difference': diff,
-                'significant': diff > 0.05  # Simplified threshold
-            }
+        return significance_results
 
-    return significance_results
-
-
-def generate_report(self):
-    """
+    def generate_report(self):
+        """
         Generate comprehensive comparison report
         """
-    print("\n" + "=" * 60)
-    print("MODEL COMPARISON REPORT")
-    print("=" * 60)
+        print("\n" + "=" * 60)
+        print("MODEL COMPARISON REPORT")
+        print("=" * 60)
 
-    # Results table
-    results_df = pd.DataFrame(self.results).T
-    print("\nPerformance Metrics:")
-    print(results_df[['accuracy', 'precision', 'recall', 'f1_score', 'cv_mean', 'cv_std']].round(4))
+        # Results table
+        results_df = pd.DataFrame(self.results).T
+        print("\nPerformance Metrics:")
+        print(results_df[['accuracy', 'precision', 'recall', 'f1_score', 'cv_mean', 'cv_std']].round(4))
 
-    # Statistical significance
-    print("\nStatistical Significance Test:")
-    significance = self.statistical_significance_test()
-    for comparison, result in significance.items():
-        print(f"{comparison}: Difference = {result['difference']:.4f}, "
-              f"Significant = {result['significant']}")
+        # Statistical significance
+        print("\nStatistical Significance Test:")
+        significance = self.statistical_significance_test()
+        for comparison, result in significance.items():
+            print(f"{comparison}: Difference = {result['difference']:.4f}, "
+                  f"Significant = {result['significant']}")
 
-    # Best performing model
-    best_model = max(self.results.keys(), key=lambda x: self.results[x]['accuracy'])
-    print(f"\nBest Performing Model: {best_model}")
-    print(f"Accuracy: {self.results[best_model]['accuracy']:.4f}")
+        # Best performing model
+        best_model = max(self.results.keys(), key=lambda x: self.results[x]['accuracy'])
+        print(f"\nBest Performing Model: {best_model}")
+        print(f"Accuracy: {self.results[best_model]['accuracy']:.4f}")
 
-    return results_df
+        return results_df
 
 
 # Example usage function
@@ -517,6 +574,7 @@ def generate_sample_healthcare_data(n_samples=1000):
         'hospital_visits': np.random.randint(0, 10, n_samples),
         'medication_adherence': np.random.choice(['High', 'Medium', 'Low'], n_samples)
     }
+
     # Create target variable (health outcome)
     health_outcome = []
     for i in range(n_samples):
